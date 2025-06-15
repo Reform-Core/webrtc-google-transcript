@@ -22,7 +22,7 @@ const request = {
 };
 
 const client = new Speech.SpeechClient({
-  apiKey: 'AIzaSyAHRIMf11gX7rK3fD9o8K0qbjXRrbUkMwg'
+  apiKey: '*******************************'
 });
 
 const recognizeStream = client
