@@ -1,8 +1,13 @@
-try {
-  window.AudioContext = window.AudioContext || window.webkitAudioContext;
-  window.audioContext = new AudioContext();
-} catch (e) {
-  alert('Web Audio API not supported.');
+let audioContext;
+let mediaRecorder;
+let socket;
+const contextOptions = { latencyHint: "interactive" };
+
+if (window.webkitAudioContext) {
+  // AudioContext is undefined in Safari and old versions of Chrome
+  audioContext = new (window.webkitAudioContext)(contextOptions)
+} else {
+  audioContext = new AudioContext(contextOptions)
 }
 
 var constraints = window.constraints = {
@@ -15,89 +20,115 @@ $(document).ready(() => {
 
   const button = $("button#control");
 
-  button.click(() => {
+  button.click(async () => {
     if (button.text() === 'Start') {
       console.log('Start Recording, API calls');
 
-      navigator.mediaDevices.getUserMedia(constraints).
-          then(handleSuccess).catch(handleError);
+      await audioContext.resume();
+      const audioWorkletIsSupported = audioContext.audioWorklet !== undefined;
+      if (!audioWorkletIsSupported) {
+        console.error('worklet not supported!');
+        await this.alertService.createAlert(
+          'Audio Worklet Not Supported',
+          'error'
+        );
+      }
+      
+      try {
+        await audioContext.audioWorklet.addModule('recording-processor.js');
+        // await audioContext.audioWorklet.addModule('demo-processor.js');
+      } catch (ae) {
+        console.error(ae);
+        await this.alertService.createAlert(
+          'Could not add the audio module',
+          'error'
+        );
+      }
 
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          
+      const source1 = audioContext.createMediaStreamSource(stream);
+      
+      socket = new WebSocket("ws://localhost:12345/");
+
+      socket.binaryType = "arraybuffer";
+      socket.onopen = () => {
+        // socket.send(JSON.stringify({
+        //   format: "LINEAR16",
+        //   language: 'en-US',
+        //   punctuation: true,
+        //   rate: 44100
+        // }));
+        console.log('socket:opened:sending start');
+        socket.send('start');
+      }
+      socket.onmessage = (b) => {
+        const data = JSON.parse(b.data);
+        console.log('received:', data);
+
+        if (data.isFinal) {
+          $(".output-final").append(
+            "<p>" + data.text + "</p>"
+          );
+        } else {
+          $(".output").text(data.text);
+        }
+      };
+
+      mediaRecorder = new AudioWorkletNode(
+          audioContext,
+          'recording-processor',
+          {
+            processorOptions: {
+              numberOfChannels: 1,
+              sampleRate: audioContext.sampleRate,
+              maxFrameCount: audioContext.sampleRate * 1 / 10
+            },
+          },
+        );
+        
+      mediaRecorder.port.onmessageerror = async (ev) => {
+        console.error('Error receiving message from worklet', ev);
+        await this.alertService.createAlert(
+          'Error from worklet',
+          'error'
+        )
+      };    
+      
+      const destination = audioContext.createMediaStreamDestination();    
+      mediaRecorder.connect(destination);
+      source1.connect(mediaRecorder)      
+    
+      mediaRecorder.port.onmessage = (event) => {
+        // console.log('audio:event');
+        if (event.data.message === 'SHARE_RECORDING_BUFFER') {
+          let input = event.data.buffer[0] || new Float32Array(4096);
+
+          for (var idx = input.length, newData = new Int16Array(idx); idx--;)
+            newData[idx] = 32767 * Math.min(1, input[idx]);
+
+          if (socket.readyState === 1) {
+            // console.log(newData.length);
+            // socket.send(newData.buffer);
+            socket.send(newData);
+          }        
+        }
+      }          
+      
       button.text('Stop').addClass('stop').removeClass('start');
     } else {
-      if (window.script) {
-        window.script.onaudioprocess = function() {};
-      }
-      if (window.socket) {
-        window.socket.readyState && window.socket.send('end');
-        window.socket.readyState && window.socket.close();
+      mediaRecorder.port.postMessage({
+        message: 'UPDATE_RECORDING_STATE',
+        setRecording: false,
+      });
+      mediaRecorder.port.close();
+      mediaRecorder.disconnect();
+      if (socket) {
+        socket.readyState && socket.send('end');
+        socket.readyState && socket.close();
       }
 
       button.text('Start').removeClass('stop').addClass('start');
     }
   })
 });
-
-function handleSuccess(stream) {
-  // var socket = new WebSocket("wss://cloudspeech.goog/ws");
-  var socket = new WebSocket("ws://localhost:12345/");
-
-  socket.binaryType = "arraybuffer";
-  socket.onopen = function() {
-    // socket.send(JSON.stringify({
-    //   format: "LINEAR16",
-    //   language: 'en-US',
-    //   punctuation: true,
-    //   rate: 44100
-    // }));
-
-    socket.send('start');
-  }
-
-  var audioTracks = stream.getAudioTracks();
-
-  stream.oninactive = function() {
-    console.log('Stream ended');
-  };
-
-  window.stream = stream; // make variable available to browser console
-  // audio.srcObject = stream;
-
-  var script = window.audioContext.createScriptProcessor(4096, 1, 1);
-
-  script.onaudioprocess = function(event) {
-    var input = event.inputBuffer.getChannelData(0) || new Float32Array(4096);
-
-    for (var idx = input.length, newData = new Int16Array(idx); idx--;)
-      newData[idx] = 32767 * Math.min(1, input[idx]);
-
-    if (socket.readyState === 1) {
-      // console.log(newData);
-      // socket.send(newData.buffer);
-      socket.send(newData);
-    }
-  }
-
-  socket.onmessage = function(b) {
-    const data = JSON.parse(b.data);
-    // console.log(data);
-
-    if (data.isFinal) {
-      $(".output-final").append(
-        "<p>" + data.text + "</p>"
-      );
-    } else {
-      $(".output").text(data.text);
-    }
-  };
-
-  var mic = window.audioContext.createMediaStreamSource(stream);
-  mic.connect(script);
-  script.connect(window.audioContext.destination);
-
-  window.socket = socket;
-  window.script = script;
-}
-
-function handleError(error) {
-  console.log('navigator.getUserMedia error: ', error);
-}

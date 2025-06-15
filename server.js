@@ -21,7 +21,9 @@ const request = {
   verbose: true,
 };
 
-const client = new Speech.SpeechClient();
+const client = new Speech.SpeechClient({
+  apiKey: 'AIzaSyAHRIMf11gX7rK3fD9o8K0qbjXRrbUkMwg'
+});
 
 const recognizeStream = client
   .streamingRecognize(request)
@@ -48,20 +50,25 @@ var reader = new streams.ReadableStream('');
 // reader.pipe(writer);
 
 // --- socket ---
-const wss = new WebSocket.Server({ port: 12345 });
-wss.on('connection', function connection(ws) {
-  ws.on('message', function incoming(message) {
-    if (message === 'start') {
+const wss = new WebSocket.Server({ host: '0.0.0.0', port: 12345 });
+wss.on('connection', (ws) => {
+  console.log('connected');
+  ws.on('message', (message) => {
+    if (Buffer.from(message).toString() === 'start') {
+      console.log('received start: streaming into google');
       reader.pipe(recognizeStream);
-      // reader.pipe(process.stdout);
-      console.log('streaming into google');
-    } else if (message === 'end') {
+      // reader.pipe(process.stdout);      
+    } else if (Buffer.from(message).toString() === 'end') {
       console.log('\n\n\n======================\nstop');
     } else {
       // const buf = Buffer.from(message);
       // console.log(util.inspect(message));
       reader.append(message);
     }
+  });
+
+  ws.on('error', (error) => {
+    console.error(err);
   });
 
   wsInstance = ws; // ws.send('something');
